@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlparse
+pandas
+networkx
+langchain
+ollama
+python-dotenv
+rich
+python-multipart 

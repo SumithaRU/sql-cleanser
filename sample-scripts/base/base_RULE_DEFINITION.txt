@@ -1,0 +1,4 @@
+REM INSERTING into RULE_DEFINITION
+SET DEFINE OFF;
+
+Insert into RULE_DEFINITION ("rd_id","rd_description","rd_rule_type","rd_tpe_rset_id","rd_target_rs_id","rd_bpd_id","rd_qualifier_type","rd_param_type","rd_param_string","rd_expression") values (28400,'Record Count','C',-6499,null,null,null,'S','341',null);
