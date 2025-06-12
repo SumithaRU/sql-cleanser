@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Tuple
 from ingest import parse_sql_file
 from ollama_utils import infer_primary_keys, extract_json_from_response
 from config_loader import config
+from transform import convert_insert_statements
 
 # Configuration from YAML
 OLLAMA_HOST = config.get('ollama.host', 'http://localhost:11434')
@@ -47,61 +48,89 @@ def infer_and_sort(rows_by_table: Dict[str, List[Dict[str, Any]]]) -> Tuple[Dict
     return sorted_rows, primary_keys
 
 
-def compute_diffs(
-    base_rows: Dict[str, List[Dict[str, Any]]],
-    oracle_rows: Dict[str, List[Dict[str, Any]]],
-    primary_keys: Dict[str, List[str]]
+def compute_bidirectional_diffs(
+    source_rows: Dict[str, List[Dict[str, Any]]],
+    target_rows: Dict[str, List[Dict[str, Any]]],
+    primary_keys: Dict[str, List[str]],
+    direction: str
 ) -> Dict[str, Any]:
+    """
+    Compute differences between source and target datasets.
+    Direction-aware labeling for better clarity.
+    """
+    source_type = "PostgreSQL" if direction == "pg2ora" else "Oracle"
+    target_type = "Oracle" if direction == "pg2ora" else "PostgreSQL"
+    
     table_diffs: Dict[str, Dict[str, Any]] = {}
     summary_missing: List[Dict[str, Any]] = []
     summary_extra: List[Dict[str, Any]] = []
     summary_mismatch: List[Dict[str, Any]] = []
-    all_tables = set(base_rows) | set(oracle_rows)
+    
+    all_tables = set(source_rows) | set(target_rows)
+    
     for table in all_tables:
-        b_list = base_rows.get(table, [])
-        o_list = oracle_rows.get(table, [])
+        s_list = source_rows.get(table, [])
+        t_list = target_rows.get(table, [])
         pk_cols = primary_keys.get(table, [])
+        
         # Build maps by PK tuple
-        b_map = {}
-        for row in b_list:
+        s_map = {}
+        for row in s_list:
             try:
                 key = tuple(row['values'][row['columns'].index(col)] for col in pk_cols)
             except Exception:
                 key = tuple()
-            b_map[key] = row
-        o_map = {}
-        for row in o_list:
+            s_map[key] = row
+            
+        t_map = {}
+        for row in t_list:
             try:
                 key = tuple(row['values'][row['columns'].index(col)] for col in pk_cols)
             except Exception:
                 key = tuple()
-            o_map[key] = row
-        missing_keys = set(b_map) - set(o_map)
-        extra_keys = set(o_map) - set(b_map)
-        common_keys = set(b_map) & set(o_map)
-        missing = [b_map[k] for k in missing_keys]
-        extra = [o_map[k] for k in extra_keys]
+            t_map[key] = row
+        
+        missing_keys = set(s_map) - set(t_map)
+        extra_keys = set(t_map) - set(s_map)
+        common_keys = set(s_map) & set(t_map)
+        
+        missing = [s_map[k] for k in missing_keys]
+        extra = [t_map[k] for k in extra_keys]
         mismatches = []
+        
         for k in common_keys:
-            b_vals = b_map[k]['values']
-            o_vals = o_map[k]['values']
-            if b_vals != o_vals:
-                mismatches.append({'pk': k, 'base_values': b_vals, 'oracle_values': o_vals})
+            s_vals = s_map[k]['values']
+            t_vals = t_map[k]['values']
+            if s_vals != t_vals:
+                mismatches.append({
+                    'pk': k, 
+                    f'{source_type.lower()}_values': s_vals, 
+                    f'{target_type.lower()}_values': t_vals
+                })
+        
         table_diffs[table] = {
-            'missing': missing,
-            'extra': extra,
+            'missing_in_target': missing,
+            'extra_in_target': extra,
             'mismatches': mismatches
         }
+        
         for row in missing:
             summary_missing.append({'table': table, 'row': row})
         for row in extra:
             summary_extra.append({'table': table, 'row': row})
         for m in mismatches:
             summary_mismatch.append({'table': table, **m})
+    
     diff = {
+        'metadata': {
+            'direction': direction,
+            'source_type': source_type,
+            'target_type': target_type,
+            'generated_at': datetime.datetime.now().isoformat()
+        },
         'summary': {
-            'missing_in_oracle': summary_missing,
-            'extra_in_oracle': summary_extra,
+            f'missing_in_{target_type.lower()}': summary_missing,
+            f'extra_in_{target_type.lower()}': summary_extra,
             'mismatches': summary_mismatch
         },
         'tables': table_diffs
@@ -140,10 +169,59 @@ def call_llm_with_retry(prompt: str) -> str:
     raise RuntimeError(f"LLM call failed after {OLLAMA_RETRIES} attempts. Last error: {str(last_exc)}")
 
 
+def generate_conversion_sql(
+    missing_rows: List[Dict[str, Any]], 
+    direction: str,
+    output_dir: str
+) -> str:
+    """
+    Generate INSERT statements for missing rows, converted to target dialect.
+    """
+    if not missing_rows:
+        return ""
+    
+    # Group rows by table
+    rows_by_table = {}
+    for item in missing_rows:
+        table = item['table']
+        row = item['row']
+        if table not in rows_by_table:
+            rows_by_table[table] = []
+        rows_by_table[table].append(row)
+    
+    # Generate converted SQL
+    converted_sql_lines = []
+    converted_sql_lines.append(f"-- Converted INSERT statements for missing records")
+    converted_sql_lines.append(f"-- Direction: {direction}")
+    converted_sql_lines.append(f"-- Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    converted_sql_lines.append("")
+    
+    for table, rows in rows_by_table.items():
+        converted_sql_lines.append(f"-- Table: {table}")
+        converted_sql_lines.append(f"-- Records: {len(rows)}")
+        converted_sql_lines.append("")
+        
+        # Convert each row
+        for row in rows:
+            converted_insert = convert_insert_statements([row], direction)[0]
+            converted_sql_lines.append(converted_insert)
+        
+        converted_sql_lines.append("")
+    
+    # Write to file
+    sql_filename = f"missing_records_{direction}.sql"
+    sql_path = os.path.join(output_dir, sql_filename)
+    with open(sql_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(converted_sql_lines))
+    
+    return sql_filename
+
+
 def run_compare(
-    base_dir: str,
-    oracle_dir: str,
+    source_dir: str,
+    target_dir: str,
     output_dir: str,
+    direction: str,
     progress_callback=None
 ) -> Tuple[str, str, Dict[str, Any]]:
     os.makedirs(output_dir, exist_ok=True)
@@ -152,68 +230,92 @@ def run_compare(
         progress_callback(15, "📊 Parsing SQL structures...")
     
     # Load and sort
-    base_rows_raw = load_rows_from_dir(base_dir)
-    oracle_rows_raw = load_rows_from_dir(oracle_dir)
+    source_rows_raw = load_rows_from_dir(source_dir)
+    target_rows_raw = load_rows_from_dir(target_dir)
     
     if progress_callback:
         progress_callback(30, "🔧 Inferring primary keys...")
     
-    base_rows, base_pks = infer_and_sort(base_rows_raw)
-    oracle_rows, oracle_pks = infer_and_sort(oracle_rows_raw)
+    source_rows, source_pks = infer_and_sort(source_rows_raw)
+    target_rows, target_pks = infer_and_sort(target_rows_raw)
     
     if progress_callback:
         progress_callback(45, "🔍 Analyzing differences...")
     
     # Merge PK definitions
-    pks = {**oracle_pks, **base_pks}
-    # Compute diffs
-    diff_json = compute_diffs(base_rows, oracle_rows, pks)
+    pks = {**target_pks, **source_pks}
+    
+    # Compute bidirectional diffs
+    diff_json = compute_bidirectional_diffs(source_rows, target_rows, pks, direction)
+    
     if progress_callback:
         progress_callback(60, "📋 Creating reports...")
     
     # Write diff.json
     diff_path = os.path.join(output_dir, 'diff.json')
-    with open(diff_path, 'w') as f:
+    with open(diff_path, 'w', encoding='utf-8') as f:
         json.dump(diff_json, f, default=str, indent=2)
-    # Generate Markdown report
+    
+    # Generate bidirectional Markdown report
+    source_type = diff_json['metadata']['source_type']
+    target_type = diff_json['metadata']['target_type']
+    
     lines: List[str] = []
-    lines.append('# Diff Report')
+    lines.append(f'# {direction.upper()} Migration Diff Report')
+    lines.append(f'**Direction:** {source_type} → {target_type}')
+    lines.append(f'**Generated:** {diff_json["metadata"]["generated_at"]}')
+    lines.append('')
     lines.append('## Summary')
-    lines.append(f"- Missing in Oracle: {len(diff_json['summary']['missing_in_oracle'])}")
-    lines.append(f"- Extra in Oracle: {len(diff_json['summary']['extra_in_oracle'])}")
+    missing_key = f'missing_in_{target_type.lower()}'
+    extra_key = f'extra_in_{target_type.lower()}'
+    lines.append(f"- Missing in {target_type}: {len(diff_json['summary'][missing_key])}")
+    lines.append(f"- Extra in {target_type}: {len(diff_json['summary'][extra_key])}")
     lines.append(f"- Mismatches: {len(diff_json['summary']['mismatches'])}")
-    lines.append('\n')
+    lines.append('')
+    
     for table, diffs in diff_json['tables'].items():
         lines.append(f"### Table: {table}")
-        lines.append(f"- Missing: {len(diffs['missing'])}")
-        lines.append(f"- Extra: {len(diffs['extra'])}")
-        lines.append(f"- Mismatches: {len(diffs['mismatches'])}\n")
+        lines.append(f"- Missing in {target_type}: {len(diffs['missing_in_target'])}")
+        lines.append(f"- Extra in {target_type}: {len(diffs['extra_in_target'])}")
+        lines.append(f"- Mismatches: {len(diffs['mismatches'])}")
+        lines.append('')
+    
     report_md = '\n'.join(lines)
     report_path = os.path.join(output_dir, 'diff_report.md')
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write(report_md)
+    
+    if progress_callback:
+        progress_callback(70, "🔄 Generating conversion SQL...")
+    
+    # Generate conversion SQL for missing records
+    missing_records = diff_json['summary'][missing_key]
+    conversion_sql_file = generate_conversion_sql(missing_records, direction, output_dir)
+    
     # Call LLM for migration plan with reduced payload
-    # Create a summary instead of full diff JSON to avoid token limits
     diff_summary = {
-        'total_missing': len(diff_json['summary']['missing_in_oracle']),
-        'total_extra': len(diff_json['summary']['extra_in_oracle']),
+        'direction': direction,
+        'source_type': source_type,
+        'target_type': target_type,
+        'total_missing': len(diff_json['summary'][missing_key]),
+        'total_extra': len(diff_json['summary'][extra_key]),
         'total_mismatches': len(diff_json['summary']['mismatches']),
         'tables_affected': list(diff_json['tables'].keys()),
-        'sample_missing': diff_json['summary']['missing_in_oracle'][:3],  # Only first 3 samples
-        'sample_extra': diff_json['summary']['extra_in_oracle'][:3],
+        'sample_missing': diff_json['summary'][missing_key][:3],
+        'sample_extra': diff_json['summary'][extra_key][:3],
         'sample_mismatches': diff_json['summary']['mismatches'][:3]
     }
     
     prompt = (
-        "You are a senior database architect. Using the diff summary below, generate:\n"
-        "(A) a Markdown migration guide (datatype mapping, sequence handling, SQL rewrite tips);\n"
+        f"You are a senior database architect. Using the diff summary below for {direction.upper()} migration, generate:\n"
+        f"(A) a Markdown migration guide ({source_type}→{target_type} datatype mapping, sequence handling, SQL rewrite tips);\n"
         "(B) a JSON object with keys: steps[], risk_level, estimated_effort, warnings[].\n"
         "Return both in one response, clearly delimited.\n\n"
         f"Diff Summary: {json.dumps(diff_summary, indent=2)}"
     )
     
     if progress_callback:
-        progress_callback(75, "🤖 AI processing duplicates...")
+        progress_callback(80, "🤖 AI processing migration plan...")
     
     try:
         llm_resp = call_llm_with_retry(prompt)
@@ -225,40 +327,50 @@ def run_compare(
             print(f"LLM JSON parsing failed: {e}, using fallback plan")
             # Fallback migration plan
             plan_json = {
+                "direction": direction,
+                "source_type": source_type,
+                "target_type": target_type,
                 "steps": [
-                    "Review diff_report.md for detailed differences",
-                    "Identify missing records and add them to Oracle environment",
-                    "Review extra records in Oracle for removal or verification",
-                    "Resolve data mismatches by updating Oracle records"
+                    f"Review diff_report.md for detailed {direction} differences",
+                    f"Apply {conversion_sql_file} to add missing records to {target_type}",
+                    f"Review extra records in {target_type} for removal or verification",
+                    "Resolve data mismatches by updating target records",
+                    f"Test {source_type}→{target_type} conversion in staging environment"
                 ],
                 "risk_level": "MEDIUM",
                 "estimated_effort": "4-8 hours",
                 "warnings": [
                     "LLM analysis failed - manual review required",
-                    "Verify all data transformations manually",
+                    f"Verify all {direction} transformations manually",
                     "Test migration in staging environment first"
                 ]
             }
     except Exception as e:
         print(f"LLM call completely failed: {e}, using minimal fallback")
-        llm_resp = "# Migration Guide\n\nLLM service unavailable. Please review diff_report.md manually."
+        llm_resp = f"# {direction.upper()} Migration Guide\n\nLLM service unavailable. Please review diff_report.md manually."
         plan_json = {
-            "steps": ["Manual review required - LLM service unavailable"],
+            "direction": direction,
+            "source_type": source_type,
+            "target_type": target_type,
+            "steps": [f"Manual review required - LLM service unavailable for {direction} migration"],
             "risk_level": "HIGH", 
             "estimated_effort": "Manual assessment needed",
             "warnings": ["LLM service failed - all analysis must be done manually"]
         }
+    
     # Safely extract markdown part
     try:
         md_part = llm_resp.replace(json_part, '').strip() if json_part in llm_resp else llm_resp.strip()
     except:
         md_part = llm_resp.strip()
+    
     # Write migration plan files
     plan_md_path = os.path.join(output_dir, 'migration_plan.md')
-    with open(plan_md_path, 'w') as f:
+    with open(plan_md_path, 'w', encoding='utf-8') as f:
         f.write(md_part)
+    
     plan_json_path = os.path.join(output_dir, 'migration_plan.json')
-    with open(plan_json_path, 'w') as f:
+    with open(plan_json_path, 'w', encoding='utf-8') as f:
         json.dump(plan_json, f, default=str, indent=2)
     
     if progress_callback:
@@ -266,24 +378,42 @@ def run_compare(
     
     # Package into ZIP
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    zip_filename = f"compare_{timestamp}.zip"
+    zip_filename = f"compare_{direction}_{timestamp}.zip"
     zip_path = os.path.join(output_dir, zip_filename)
+    
+    # List of files to include in ZIP
+    files_to_zip = ['diff.json', 'diff_report.md', 'migration_plan.md', 'migration_plan.json']
+    if conversion_sql_file:
+        files_to_zip.append(conversion_sql_file)
+    
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for fname in ['diff.json', 'diff_report.md', 'migration_plan.md', 'migration_plan.json']:
-            zf.write(os.path.join(output_dir, fname), arcname=fname)
+        for fname in files_to_zip:
+            file_path = os.path.join(output_dir, fname)
+            if os.path.exists(file_path):
+                zf.write(file_path, arcname=fname)
+    
     return zip_path, zip_filename, diff_json
+
+
+# Legacy function name for backward compatibility
+def compute_diffs(base_rows, oracle_rows, primary_keys):
+    """Legacy function for backward compatibility"""
+    return compute_bidirectional_diffs(base_rows, oracle_rows, primary_keys, "pg2ora")
 
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Dev CLI for compare & migrate')
-    parser.add_argument('--base', required=True, help='Path to base scripts directory')
-    parser.add_argument('--oracle', required=True, help='Path to oracle scripts directory')
+    parser = argparse.ArgumentParser(description='Dev CLI for bidirectional compare & migrate')
+    parser.add_argument('--source', required=True, help='Path to source scripts directory')
+    parser.add_argument('--target', required=True, help='Path to target scripts directory')
+    parser.add_argument('--direction', required=True, choices=['pg2ora', 'ora2pg'], help='Conversion direction')
     parser.add_argument('--out', required=False, default='', help='Output directory override')
     args = parser.parse_args()
+    
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_dir = args.out if args.out else os.path.join('results', f"compare_{ts}")
+    out_dir = args.out if args.out else os.path.join('results', f"compare_{args.direction}_{ts}")
     os.makedirs(out_dir, exist_ok=True)
-    zip_path, zip_filename, diff_json = run_compare(args.base, args.oracle, out_dir)
-    stub = {'status': 'ok', 'zip_filename': zip_filename}
+    
+    zip_path, zip_filename, diff_json = run_compare(args.source, args.target, out_dir, args.direction)
+    stub = {'status': 'ok', 'zip_filename': zip_filename, 'direction': args.direction}
     print(json.dumps(stub)) 

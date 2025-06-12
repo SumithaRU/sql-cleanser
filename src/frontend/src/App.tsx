@@ -3,36 +3,49 @@ import { compareFilesWithProgress } from "./lib/api";
 import Dropzone from "./components/Dropzone";
 import ProgressBar from "./components/ProgressBar";
 import ComparisonNameInput from "./components/ComparisonNameInput";
+import DirectionSelector, {
+  Direction,
+  DIRECTION_OPTIONS,
+} from "./components/DirectionSelector";
+import Toast from "./components/Toast";
 
 const App: React.FC = () => {
-  const [baseFiles, setBaseFiles] = useState<File[]>([]);
-  const [oracleFiles, setOracleFiles] = useState<File[]>([]);
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [targetFiles, setTargetFiles] = useState<File[]>([]);
+  const [direction, setDirection] = useState<Direction>("pg2ora");
   const [progress, setProgress] = useState<number>(0);
   const [status, setStatus] = useState<string>("");
   const [comparisonName, setComparisonName] = useState<string>("");
   const [currentStep, setCurrentStep] = useState<string>("");
   const [resetCountdown, setResetCountdown] = useState<number>(0);
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "success" | "error" | "info";
+  } | null>(null);
 
   // Enhanced comparison state logic
-  const hasBaseFiles = baseFiles.length > 0;
-  const hasOracleFiles = oracleFiles.length > 0;
+  const hasSourceFiles = sourceFiles.length > 0;
+  const hasTargetFiles = targetFiles.length > 0;
   const fileCountMismatch =
-    hasBaseFiles && hasOracleFiles && baseFiles.length !== oracleFiles.length;
+    hasSourceFiles &&
+    hasTargetFiles &&
+    sourceFiles.length !== targetFiles.length;
   const canCompare =
-    hasBaseFiles &&
-    hasOracleFiles &&
+    hasSourceFiles &&
+    hasTargetFiles &&
     !fileCountMismatch &&
     status !== "comparing";
   const isInProgress = status === "comparing";
 
   const handleReset = () => {
-    setBaseFiles([]);
-    setOracleFiles([]);
+    setSourceFiles([]);
+    setTargetFiles([]);
     setProgress(0);
     setStatus("");
     setComparisonName("");
     setCurrentStep("");
     setResetCountdown(0);
+    setToast(null);
   };
 
   // Generate filename with timestamp and optional name
@@ -71,13 +84,14 @@ const App: React.FC = () => {
 
     try {
       // Convert FileList to File[]
-      const baseFileList = Array.from(baseFiles) as unknown as FileList;
-      const oracleFileList = Array.from(oracleFiles) as unknown as FileList;
+      const sourceFileList = Array.from(sourceFiles) as unknown as FileList;
+      const targetFileList = Array.from(targetFiles) as unknown as FileList;
 
       // Use real progress tracking
       const { blob, filename } = await compareFilesWithProgress(
-        baseFileList,
-        oracleFileList,
+        sourceFileList,
+        targetFileList,
+        direction,
         comparisonName,
         (progressPercent: number, step: string) => {
           setProgress(progressPercent);
@@ -104,12 +118,47 @@ const App: React.FC = () => {
 
       setCurrentStep("✅ Download complete!");
       setStatus("complete");
+      setToast({
+        message: "Conversion ready – download your ZIP.",
+        type: "success",
+      });
     } catch (err) {
       console.error(err);
       setCurrentStep("❌ Comparison failed");
       setStatus("error");
+      setToast({
+        message:
+          err instanceof Error
+            ? err.message
+            : "Conversion failed. Please try again.",
+        type: "error",
+      });
     }
   };
+
+  // Get dynamic labels based on direction
+  const getLabels = () => {
+    const selectedOption =
+      DIRECTION_OPTIONS.find((opt) => opt.value === direction) ||
+      DIRECTION_OPTIONS[0];
+    if (direction === "pg2ora") {
+      return {
+        sourceLabel: "📊 PostgreSQL Scripts (Source Files)",
+        targetLabel: "🎯 Oracle Scripts (Target Files)",
+        sourceShort: "PostgreSQL Files",
+        targetShort: "Oracle Files",
+      };
+    } else {
+      return {
+        sourceLabel: "🔶 Oracle Scripts (Source Files)",
+        targetLabel: "🐘 PostgreSQL Scripts (Target Files)",
+        sourceShort: "Oracle Files",
+        targetShort: "PostgreSQL Files",
+      };
+    }
+  };
+
+  const labels = getLabels();
 
   return (
     <div style={{ padding: 20, maxWidth: "1200px", margin: "0 auto" }}>
@@ -124,6 +173,13 @@ const App: React.FC = () => {
       >
         🔄 SQL Cleanser
       </h1>
+
+      {/* Direction Selector */}
+      <DirectionSelector
+        value={direction}
+        onChange={setDirection}
+        disabled={isInProgress}
+      />
 
       <div
         style={{
@@ -143,14 +199,14 @@ const App: React.FC = () => {
               fontWeight: "500",
             }}
           >
-            📊 PostgreSQL Scripts (Base Files)
+            {labels.sourceLabel}
           </h3>
           <Dropzone
-            files={baseFiles}
-            setFiles={setBaseFiles}
-            label="Base Files"
-            otherFiles={oracleFiles}
-            otherLabel="Oracle Files"
+            files={sourceFiles}
+            setFiles={setSourceFiles}
+            label={labels.sourceShort}
+            otherFiles={targetFiles}
+            otherLabel={labels.targetShort}
           />
         </div>
         <div>
@@ -163,14 +219,14 @@ const App: React.FC = () => {
               fontWeight: "500",
             }}
           >
-            🎯 Oracle Scripts
+            {labels.targetLabel}
           </h3>
           <Dropzone
-            files={oracleFiles}
-            setFiles={setOracleFiles}
-            label="Oracle Files"
-            otherFiles={baseFiles}
-            otherLabel="Base Files"
+            files={targetFiles}
+            setFiles={setTargetFiles}
+            label={labels.targetShort}
+            otherFiles={sourceFiles}
+            otherLabel={labels.sourceShort}
           />
         </div>
       </div>
@@ -220,18 +276,18 @@ const App: React.FC = () => {
           {isInProgress
             ? `🔄 Processing... (${progress}%)`
             : canCompare
-            ? `✅ Compare & Migrate (${baseFiles.length} files each)`
+            ? `✅ Convert & Migrate (${sourceFiles.length} files each)`
             : fileCountMismatch
-            ? `File count mismatch (${baseFiles.length} vs ${oracleFiles.length})`
-            : hasBaseFiles && !hasOracleFiles
-            ? "⏳ Add Oracle files to continue"
-            : !hasBaseFiles && hasOracleFiles
-            ? "⏳ Add Base files to continue"
+            ? `File count mismatch (${sourceFiles.length} vs ${targetFiles.length})`
+            : hasSourceFiles && !hasTargetFiles
+            ? `⏳ Add ${labels.targetShort} to continue`
+            : !hasSourceFiles && hasTargetFiles
+            ? `⏳ Add ${labels.sourceShort} to continue`
             : "📁 Upload files to both sections"}
         </button>
 
         {/* Reset Button */}
-        {(hasBaseFiles || hasOracleFiles) && !isInProgress && (
+        {(hasSourceFiles || hasTargetFiles) && !isInProgress && (
           <button
             onClick={handleReset}
             style={{
@@ -262,19 +318,21 @@ const App: React.FC = () => {
 
         {/* Status Messages */}
         <div style={{ marginTop: "20px" }}>
-          {!hasBaseFiles && !hasOracleFiles && status !== "complete" && (
+          {!hasSourceFiles && !hasTargetFiles && status !== "complete" && (
             <p style={{ color: "#888", fontSize: "14px" }}>
-              Upload SQL files to both sections to start comparison
+              Upload SQL files to both sections to start conversion
             </p>
           )}
-          {hasBaseFiles && !hasOracleFiles && status !== "complete" && (
+          {hasSourceFiles && !hasTargetFiles && status !== "complete" && (
             <p style={{ color: "#FF9800", fontSize: "14px" }}>
-              ⚠️ Base files uploaded. Add Oracle files to enable comparison.
+              ⚠️ {labels.sourceShort} uploaded. Add {labels.targetShort} to
+              enable conversion.
             </p>
           )}
-          {!hasBaseFiles && hasOracleFiles && status !== "complete" && (
+          {!hasSourceFiles && hasTargetFiles && status !== "complete" && (
             <p style={{ color: "#FF9800", fontSize: "14px" }}>
-              ⚠️ Oracle files uploaded. Add Base files to enable comparison.
+              ⚠️ {labels.targetShort} uploaded. Add {labels.sourceShort} to
+              enable conversion.
             </p>
           )}
           {fileCountMismatch && status !== "complete" && (
@@ -282,12 +340,12 @@ const App: React.FC = () => {
               style={{ color: "#E57373", fontSize: "14px", fontWeight: "500" }}
             >
               ❌ File count mismatch! Both sides must have the same number of
-              files for accurate comparison.
+              files for accurate conversion.
             </p>
           )}
           {canCompare && !isInProgress && status !== "complete" && (
             <p style={{ color: "#4CAF50", fontSize: "14px" }}>
-              ✅ Ready to compare! Both file sets are uploaded and counts match.
+              ✅ Ready to convert! Both file sets are uploaded and counts match.
             </p>
           )}
           {status === "complete" && (
@@ -299,7 +357,7 @@ const App: React.FC = () => {
                   fontWeight: "500",
                 }}
               >
-                🎉 Comparison complete! Check your downloads folder.
+                🎉 Conversion complete! Check your downloads folder.
               </p>
               <p
                 style={{
@@ -349,7 +407,7 @@ const App: React.FC = () => {
                       (e.currentTarget.style.backgroundColor = "#007bff")
                     }
                   >
-                    🆕 Start New Comparison
+                    🆕 Start New Conversion
                   </button>
                 </div>
               )}
@@ -359,7 +417,7 @@ const App: React.FC = () => {
             <p
               style={{ color: "#E57373", fontSize: "14px", fontWeight: "500" }}
             >
-              ❌ Error during comparison. Please try again.
+              ❌ Error during conversion. Please try again.
             </p>
           )}
         </div>
@@ -382,6 +440,15 @@ const App: React.FC = () => {
             height={14}
           />
         </div>
+      )}
+
+      {/* Toast Notifications */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
       )}
     </div>
   );

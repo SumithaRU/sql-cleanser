@@ -1,8 +1,8 @@
 import os, uuid, zipfile
 import datetime
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Form
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import List
+from typing import List, Optional
 from compare_utils import run_compare
 import traceback
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +16,7 @@ RESULTS_DIRECTORY = config.get('output.results_directory', 'results')
 app = FastAPI(
     title=config.get('application.name', 'SQL Cleanser'),
     version=config.get('application.version', '2.0.0'),
-    description=config.get('application.description', 'AI-Powered SQL Migration Tool')
+    description=config.get('application.description', 'AI-Powered Bidirectional SQL Migration Tool')
 )
 
 # Enable CORS based on configuration
@@ -41,35 +41,51 @@ def get_job_progress(job_id: str):
 @app.post('/compare')
 async def compare(
     background_tasks: BackgroundTasks,
-    base_files: List[UploadFile] = File(..., alias="base_files"),
-    oracle_files: List[UploadFile] = File(..., alias="oracle_files")
+    direction: str = Form(..., description="Conversion direction: 'pg2ora' or 'ora2pg'"),
+    source_files: List[UploadFile] = File(..., alias="source_files"),
+    target_files: List[UploadFile] = File(..., alias="target_files")
 ):
+    """
+    Bidirectional SQL comparison and conversion endpoint.
+    
+    Args:
+        direction: Conversion direction ('pg2ora' for PostgreSQL→Oracle, 'ora2pg' for Oracle→PostgreSQL)
+        source_files: Source SQL files to be converted
+        target_files: Target SQL files for comparison
+    """
     try:
+        # Validate direction parameter
+        if direction not in ['pg2ora', 'ora2pg']:
+            raise HTTPException(
+                status_code=400, 
+                detail="Direction must be 'pg2ora' (PostgreSQL→Oracle) or 'ora2pg' (Oracle→PostgreSQL)"
+            )
+            
         # Validate input files
-        if not base_files or not oracle_files:
-            raise HTTPException(status_code=400, detail="Both base and oracle files are required")
+        if not source_files or not target_files:
+            raise HTTPException(status_code=400, detail="Both source and target files are required")
             
         # Slice file lists to MAX_BATCH_FILES
-        base_files = base_files[:MAX_BATCH_FILES]
-        oracle_files = oracle_files[:MAX_BATCH_FILES]
+        source_files = source_files[:MAX_BATCH_FILES]
+        target_files = target_files[:MAX_BATCH_FILES]
         
         job_id = str(uuid.uuid4())
         job_dir = os.path.join(RESULTS_DIRECTORY, job_id)
-        base_dir = os.path.join(job_dir, 'base')
-        oracle_dir = os.path.join(job_dir, 'oracle')
+        source_dir = os.path.join(job_dir, 'source')
+        target_dir = os.path.join(job_dir, 'target')
         
         # Ensure directories exist
-        os.makedirs(base_dir, exist_ok=True)
-        os.makedirs(oracle_dir, exist_ok=True)
+        os.makedirs(source_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
         
         # Save uploaded files
         try:
-            for f in base_files:
-                path = os.path.join(base_dir, f.filename)
+            for f in source_files:
+                path = os.path.join(source_dir, f.filename)
                 with open(path, 'wb') as out:
                     out.write(await f.read())
-            for f in oracle_files:
-                path = os.path.join(oracle_dir, f.filename)
+            for f in target_files:
+                path = os.path.join(target_dir, f.filename)
                 with open(path, 'wb') as out:
                     out.write(await f.read())
         except Exception as e:
@@ -77,13 +93,13 @@ async def compare(
 
         # Create progress tracker
         tracker = ProgressTracker(job_id)
-        tracker.update(5, "📤 Files uploaded, starting analysis...")
+        tracker.update(5, f"📤 Files uploaded, starting {direction} analysis...")
         
-        # Start background processing
-        background_tasks.add_task(process_comparison, job_id, base_dir, oracle_dir, job_dir, tracker)
+        # Start background processing with direction parameter
+        background_tasks.add_task(process_comparison, job_id, source_dir, target_dir, job_dir, direction, tracker)
         
         # Return job ID immediately for progress tracking
-        return JSONResponse({"job_id": job_id, "status": "started"}, status_code=202)
+        return JSONResponse({"job_id": job_id, "status": "started", "direction": direction}, status_code=202)
     
     except HTTPException:
         raise
@@ -93,6 +109,21 @@ async def compare(
             {'detail': 'Unexpected error occurred', 'error': str(e), 'traceback': tb},
             status_code=500
         )
+
+# Legacy endpoint for backward compatibility
+@app.post('/compare-legacy')
+async def compare_legacy(
+    background_tasks: BackgroundTasks,
+    base_files: List[UploadFile] = File(..., alias="base_files"),
+    oracle_files: List[UploadFile] = File(..., alias="oracle_files")
+):
+    """Legacy endpoint for backward compatibility (PostgreSQL→Oracle only)"""
+    return await compare(
+        background_tasks=background_tasks,
+        direction="pg2ora",
+        source_files=base_files,
+        target_files=oracle_files
+    )
 
 @app.get('/download/{job_id}')
 def download_comparison(job_id: str):
@@ -128,14 +159,14 @@ def download_comparison(job_id: str):
     
     return StreamingResponse(iterfile(), media_type='application/zip', headers=headers)
 
-def process_comparison(job_id: str, base_dir: str, oracle_dir: str, job_dir: str, tracker: ProgressTracker):
-    """Background task to process comparison with real progress tracking"""
+def process_comparison(job_id: str, source_dir: str, target_dir: str, job_dir: str, direction: str, tracker: ProgressTracker):
+    """Background task to process bidirectional comparison with real progress tracking"""
     try:
         # Create progress callback
         def progress_callback(progress: int, step: str):
             tracker.update(progress, step)
         
-        zip_path, zip_filename, _ = run_compare(base_dir, oracle_dir, job_dir, progress_callback)
+        zip_path, zip_filename, _ = run_compare(source_dir, target_dir, job_dir, direction, progress_callback)
         tracker.complete("✅ Comparison complete! Ready for download.")
         
     except RuntimeError as e:

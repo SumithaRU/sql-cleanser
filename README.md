@@ -5,17 +5,18 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green.svg)](https://fastapi.tiangolo.com)
 [![AI Powered](https://img.shields.io/badge/AI-Ollama%20LLaMA%203-orange.svg)](https://ollama.ai)
 
-SQL Cleanser is an **AI-enhanced** end-to-end web application that intelligently transforms PostgreSQL INSERT scripts into Oracle-compatible SQL with advanced duplicate detection, semantic analysis, and comprehensive migration planning.
+SQL Cleanser is an **AI-enhanced** end-to-end web application that intelligently transforms SQL scripts between PostgreSQL and Oracle databases in both directions, with advanced duplicate detection, semantic analysis, and comprehensive migration planning.
 
 ## ✨ Key Features
 
 - 🤖 **AI-Powered Analysis**: Uses Ollama LLaMA 3 8B for intelligent data processing
 - 🔍 **Smart Duplicate Detection**: Fuzzy matching and semantic duplicate identification
-- 🔄 **Automated Conversion**: PostgreSQL → Oracle syntax transformation
+- 🔄 **Bidirectional Conversion**: PostgreSQL ↔ Oracle syntax transformation in both directions
 - 📊 **Comprehensive Reports**: Detailed analysis with AI-generated insights
 - 🎯 **Primary Key Intelligence**: AI-driven relationship detection
-- 🌐 **Modern Web Interface**: React + TypeScript frontend
-- 📦 **Complete Packaging**: ZIP downloads with organized results
+- 🌐 **Modern Web Interface**: React + TypeScript frontend with direction selector
+- 📦 **Complete Packaging**: ZIP downloads with converted SQL and organized results
+- 💾 **Smart Persistence**: Remembers your preferred conversion direction
 
 ## Prerequisites
 
