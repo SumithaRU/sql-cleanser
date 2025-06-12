@@ -1,4 +1,4 @@
-import os, re, sqlparse
+import os, re
 from typing import List, Dict
 
 INSERT_REGEX = re.compile(r"INSERT\s+INTO\s+['\"]?(\w+)['\"]?\s*\((.*?)\)\s*VALUES\s*(\(.+\));", re.IGNORECASE | re.DOTALL)

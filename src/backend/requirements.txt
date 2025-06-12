@@ -4,6 +4,7 @@ sqlparse
 pandas
 networkx
 langchain
+langchain-community
 ollama
 python-dotenv
 rich

@@ -11,7 +11,7 @@ SQL Cleanser is an end-to-end web project that cleans and transforms PostgreSQL 
 ## Backend Setup
 
 ```bash
-cd sql-cleanser/backend
+cd src/backend
 pip install -r requirements.txt
 export OLLAMA_HOST=http://localhost:11434
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -20,7 +20,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ## Frontend Setup
 
 ```bash
-cd sql-cleanser/frontend
+cd src/frontend
 npm install
 npm run dev
 ```
@@ -28,6 +28,5 @@ npm run dev
 ## Demo
 
 ```bash
-cd sql-cleanser
-scripts/run_demo.sh
-``` 
+bash scripts/run_demo.sh
+```
