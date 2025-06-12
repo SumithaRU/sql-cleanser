@@ -1,0 +1,1 @@
+CREATE TABLE users (id NUMBER, name VARCHAR2(50));

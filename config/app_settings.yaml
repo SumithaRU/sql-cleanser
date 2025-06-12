@@ -3,8 +3,8 @@
 
 application:
   name: "SQL Cleanser"
-  version: "1.0.0"
-  description: "AI-Powered PostgreSQL to Oracle SQL Migration Tool"
+  version: "2.0.0"
+  description: "AI-Powered PostgreSQL to Oracle SQL Migration Tool with Enhanced Duplicate Detection"
 
 server:
   host: "0.0.0.0"
@@ -14,23 +14,36 @@ server:
   allowed_origins:
     - "http://localhost:3000"
     - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+    - "http://127.0.0.1:3000"
 
 processing:
   max_file_size_mb: 100
   max_files_per_upload: 50
-  temp_dir: "src/backend/jobs"
+  max_batch_files: 50
+  temp_dir: "results"
   cleanup_after_hours: 24
 
   # AI Processing Settings
-  ai_timeout_seconds: 60
+  ai_timeout_seconds: 600
   ai_fallback_enabled: true
-  max_sample_rows_for_analysis: 10
+  max_sample_rows_for_analysis: 20
+  fuzzy_duplicate_threshold: 0.8
+  enable_ai_duplicate_detection: true
+  ai_sample_size_limit: 100
 
 ollama:
   host: "http://localhost:11434"
   model: "llama3:8b"
-  max_tokens: 512
-  timeout_seconds: 30
+  fallback_model: "codellama:latest"
+  max_tokens: 16384
+  timeout_seconds: 600
+
+  # Advanced AI Settings
+  retry_attempts: 3
+  temperature: 0.1
+  enable_langchain: true
+  enable_subprocess_fallback: true
 
 database:
   # Future database integration settings
@@ -43,9 +56,30 @@ logging:
   file_rotation: true
   max_log_size_mb: 10
   backup_count: 5
+  log_directory: "logs"
+  enable_ai_logging: true
+  log_duplicate_analysis: true
 
 security:
   max_request_size_mb: 200
   rate_limiting:
     enabled: true
     requests_per_minute: 60
+    burst_limit: 10
+
+# Data Quality & Analysis Settings
+data_quality:
+  enable_fuzzy_matching: true
+  similarity_threshold: 0.8
+  max_comparison_rows: 1000
+  enable_semantic_analysis: true
+  primary_key_inference: "ai_enhanced" # "ai_enhanced", "traditional", "ai_only"
+
+# Output & Reporting Settings
+output:
+  results_directory: "C:/sql-cleanser/results"
+  include_ai_analysis: true
+  generate_migration_plans: true
+  create_detailed_reports: true
+  zip_compression_level: 6
+  preserve_source_structure: true

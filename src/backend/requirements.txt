@@ -8,4 +8,5 @@ langchain-community
 ollama
 python-dotenv
 rich
-python-multipart 
+python-multipart
+pyyaml 
